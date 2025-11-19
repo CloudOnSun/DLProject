@@ -1,0 +1,8 @@
+socal-fire_00000146_pre_disaster
+socal-fire_00000510_pre_disaster
+midwest-flooding_00000219_pre_disaster
+socal-fire_00000471_pre_disaster
+hurricane-matthew_00000075_pre_disaster
+hurricane-michael_00000328_pre_disaster
+socal-fire_00000586_pre_disaster
+santa-rosa-wildfire_00000065_pre_disaster

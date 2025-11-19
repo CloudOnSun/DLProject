@@ -9,9 +9,9 @@ MASK_DIR = "data/masks"
 def read_ids(path):
     return [x.strip() for x in open(path) if x.strip()]
 
-TRAIN_IDS = read_ids("train_ids.txt")
-VAL_IDS   = read_ids("val_ids.txt")
-TEST_IDS  = read_ids("test_ids.txt")
+TRAIN_IDS = read_ids("ids/train_ids.txt")
+VAL_IDS   = read_ids("ids/val_ids.txt")
+TEST_IDS  = read_ids("ids/test_ids.txt")
 
 ext = ".png"
 

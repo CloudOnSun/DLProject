@@ -9,7 +9,7 @@ from albumentations.pytorch import ToTensorV2
 # ---- Paths ----
 IMG_DIR = "data/images"
 MASK_DIR = "data/masks"
-TEST_IDS = [l.strip() for l in open("test_ids.txt") if l.strip()]
+TEST_IDS = [l.strip() for l in open("ids/test_ids.txt") if l.strip()]
 
 # ---- Choose a few random test samples ----
 random.seed(42)
