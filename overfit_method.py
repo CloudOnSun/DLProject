@@ -9,6 +9,8 @@ from segmentation_models_pytorch import Unet
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from plot_utils import plot_loss, plot_iou
+import torch.nn as nn
+import torch.nn.init as init
 
 train_losses = []
 train_ious = []
@@ -31,6 +33,23 @@ tfms = A.Compose([
     A.Resize(1024, 1024),
     ToTensorV2()
 ])
+
+
+def init_kaiming_for_conv(m):
+    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+        # He/Kaiming init for ReLU
+        init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0.0)
+    elif isinstance(m, nn.BatchNorm2d):
+        # Standard BN init: gamma=1, beta=0
+        nn.init.constant_(m.weight, 1.0)
+        nn.init.constant_(m.bias, 0.0)
+    elif isinstance(m, nn.Linear):
+        # For any linear layers in the head, Xavier is a decent default
+        init.xavier_normal_(m.weight)
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0.0)
 
 class OverfitDataset(Dataset):
     def __init__(self, ids):
@@ -150,6 +169,10 @@ def main():
         classes=1
     ).to(device)
 
+    #apply the kaiming init for decoder only
+    model.decoder.apply(init_kaiming_for_conv)
+    model.segmentation_head.apply(init_kaiming_for_conv)
+
     # TODO motivate why using this optimizer with this learning rate
     # Sol: move from Adam to basic SGD
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
@@ -228,15 +251,15 @@ def main():
     #print(f"Best train IoU: {best_train_iou:.4f} | Best test IoU: {best_test_iou:.4f}")
     print("If train IoU >> test IoU, you've clearly demonstrated overfitting.")
     plot_loss(train_losses, val_losses=None,
-              save_path="plots/train_loss_curve_on_subsample_test_valid_2.png")
+              save_path="plots/train_loss_curve_on_subsample_test_valid_weight_init.png")
 
     plot_loss(test_losses, val_losses=None,
-              save_path="plots/test_loss_curve_on_subsample_test_valid_2.png")
+              save_path="plots/test_loss_curve_on_subsample_test_valid_weight_init.png")
 
     # plot_iou(train_ious, test_ious, test_epochs,
     #          save_path="plots/iou_curve_on_subsample_test_valid.png")
     plot_iou(train_ious, test_ious,
-             save_path="plots/iou_curve_on_subsample_test_valid_2.png")
+             save_path="plots/iou_curve_on_subsample_test_valid_weight_init.png")
 
 
 if __name__ == "__main__":
