@@ -1,6 +1,10 @@
 import os
 import math
 from typing import Iterable, Optional, Sequence, Tuple, Union
+import cv2
+
+import torch
+import numpy as np
 
 import matplotlib.pyplot as plt
 
@@ -73,78 +77,104 @@ def plot_learning_rate(
     _finalize_plot(title=title, xlabel="Step", ylabel="Learning rate", save_path=save_path, show=show)
 
 
-def plot_loss(
-    train_losses: Sequence[Number],
-    val_losses: Optional[Sequence[Number]] = None,
-    title: str = "Loss over epochs",
-    save_path: Optional[str] = None,
-    show: bool = True,
-):
+def plot_loss(train_losses, val_losses, epochs, save_path=None):
+
     train_losses = _to_list_clean(train_losses)
-    plt.figure(figsize=(7, 5))
-    if train_losses:
-        epochs = list(range(1, len(train_losses) + 1))
-        plt.plot(epochs, train_losses, label="train loss", color="C0")
+    plt.figure(figsize=(8,5))
+
+    plt.plot(epochs, train_losses, label="Train Loss", marker="o")
 
     if val_losses is not None:
-        val_losses = _to_list_clean(val_losses)
-        if val_losses:
-            val_epochs = list(range(1, len(val_losses) + 1))
-            n = min(len(val_epochs), len(val_losses))
-            plt.plot(val_epochs[:n], val_losses[:n], label="val loss", color="C1")
+        plt.plot(epochs, val_losses, label="Test Loss", marker="o")
 
-    _finalize_plot(title=title, xlabel="Epoch", ylabel="Loss", save_path=save_path, show=show)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Loss Curve")
+    plt.legend()
+    plt.grid(True)
+
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=150)
+    plt.close()
 
 
-def plot_iou(
-    train_ious: Sequence[Number],
-    test_ious: Optional[Sequence[Number]] = None,
-    test_epochs: Optional[Sequence[Number]] = None,
-    *,
-    test_every: Optional[int] = None,
-    title: str = "IoU over epochs",
-    save_path: Optional[str] = None,
-    show: bool = True,
-):
+def plot_iou(train_ious, test_ious, epochs, save_path=None):
+    plt.figure(figsize=(8,5))
+
+    plt.plot(epochs, train_ious, label="Train IoU", marker="o")
+    plt.plot(epochs, test_ious, label="Test IoU", marker="o")
+
+    plt.xlabel("Epoch")
+    plt.ylabel("IoU")
+    plt.title("IoU Curve")
+    plt.legend()
+    plt.grid(True)
+
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=150)
+    plt.close()
+
+def predict_and_show(model: torch.nn.Module, tile_id: str, tfms,  device="cuda",
+                     threshold: float = 0.5, save_path: str | None = None):
     """
-    Plot IoU curves for training and test sets.
+    Given a model and an image id (tile_id):
+    - loads the image
+    - runs the model to predict a building mask
+    - shows the image with the predicted mask overlaid in red.
 
     Args:
-        train_ious: IoU logged every epoch (length = #epochs).
-        test_ious: IoU logged less frequently (e.g., every N epochs).
-        test_epochs: Explicit epoch indices for each test IoU (e.g., [10,20,30,...]).
-        test_every: If you logged every N epochs and didn't store test_epochs,
-                    set this (e.g., test_every=10) and epochs will be [N,2N,3N,...].
+        model: a UNet-like model that maps (B,3,H,W) -> (B,1,H,W) logits or probs
+        tile_id: e.g. "guatemala-volcano_00000006_pre_disaster"
+        device: cuda or cpu
+        threshold: probability threshold for binary mask
+        save_path: optional path to save the overlay image (PNG)
     """
-    train_ious = _to_list_clean(train_ious)
-    test_ious = _to_list_clean(test_ious)
+    model.eval()
+    model.to(device)
 
-    plt.figure(figsize=(7, 5))
-    # train
-    if train_ious:
-        epochs = list(range(1, len(train_ious) + 1))
-        plt.plot(epochs, train_ious, label="train IoU", color="C0")
+    # ---- Load & preprocess image ----
+    img_path = os.path.join("data/images", tile_id + ".png")
+    img = cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB)
 
-    # test
-    if test_ious:
-        if test_epochs is not None:
-            # use provided epochs, but guard lengths
-            te = _to_list_clean(test_epochs)
-            m = min(len(te), len(test_ious))
-            if len(te) != len(test_ious):
-                print(f"⚠️ plot_iou: test_epochs ({len(te)}) != test_ious ({len(test_ious)}); truncating to {m}.")
-            x = te[:m]
-            y = test_ious[:m]
-        elif test_every is not None:
-            # infer epochs from periodic logging
-            # start at test_every, then 2*test_every, ...
-            x = [k * test_every for k in range(1, len(test_ious) + 1)]
-            y = test_ious
+
+    # ---- Forward pass ----
+    with torch.no_grad():
+        aug = tfms(image=img)
+        x = aug["image"].float().to(device)
+        pred = model(x.unsqueeze(0))
+        # If model returns logits, apply sigmoid
+        if pred.shape[1] == 1:
+            prob = torch.sigmoid(pred)
+            prob = prob.squeeze(0).squeeze(0) # (H,W)
         else:
-            # assume contiguous if nothing provided
-            x = list(range(1, len(test_ious) + 1))
-            y = test_ious
+            # if C>1, assume channel 1 is building; adapt if needed
+            prob = torch.softmax(pred, dim=1)[:, 1, ...].squeeze(0)
 
-        plt.plot(x, y, label="test IoU", color="C1")
+    # Optionally resize back if model changes resolution
+    # (here we assume output is same size as input)
 
-    _finalize_plot(title=title, xlabel="Epoch", ylabel="IoU", save_path=save_path, show=show)
+    prob_np = prob.cpu().numpy()              # (H,W)
+    mask_bin = (prob_np >= threshold).astype(np.uint8)
+
+    # ---- Prepare overlay ----
+    h, w = prob_np.shape
+
+    rgba_mask = np.zeros((h, w, 4), dtype=np.float32)
+    rgba_mask[mask_bin == 1] = [1.0, 0.0, 0.0, 0.6]   # red with alpha=0.6
+    imgplt = plt.imread(img_path)
+
+    # ---- Plot ----
+    plt.figure(figsize=(8, 8))
+    plt.imshow(imgplt)
+    plt.imshow(rgba_mask)
+    plt.axis("off")
+    plt.title(f"Predicted mask overlay: {tile_id}")
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Saved overlay to {save_path}")
+
+    plt.show()

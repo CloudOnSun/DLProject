@@ -12,15 +12,20 @@ from plot_utils import plot_loss, plot_iou
 import torch.nn as nn
 import torch.nn.init as init
 
-train_losses = []
-train_ious = []
-test_epochs = []
-test_ious = []
-test_losses = []
-IMG_DIR = "data/images"
-MASK_DIR = "data/masks"
 
-# ---------- helpers ----------
+# ---------- Data Loading ----------
+
+def norm_collate(batch):
+    # batch is a list of (x, y) from your Dataset
+    xs, ys = zip(*batch)            # tuples of tensors
+    xs = torch.stack(xs, dim=0)     # [B, 3, H, W]
+    ys = torch.stack(ys, dim=0)     # [B, 1, H, W]
+
+    # your current x is in [0, 255] as float
+    xs = xs / 255.0
+    xs = xs * 2.0 - 1.0             # now in [-1, 1]
+
+    return xs, ys
 
 def read_ids(path):
     if not os.path.exists(path):
@@ -29,8 +34,28 @@ def read_ids(path):
         ids = [l.strip() for l in f if l.strip()]
     return ids
 
-tfms = A.Compose([
+tfms_basic = A.Compose([
     A.Resize(1024, 1024),
+    ToTensorV2()
+])
+
+tfms_random_crop = A.Compose([
+    A.RandomCrop(256, 256),
+    ToTensorV2()
+])
+
+tfms_random_crop_normalized = A.Compose([
+    A.RandomCrop(256, 256),
+    A.Normalize(mean=(0.5, 0.5, 0.5),
+                std=(0.5, 0.5, 0.5),
+                max_pixel_value=255.0),
+    ToTensorV2()
+])
+
+tfms_normalized = A.Compose([
+    A.Normalize(mean=(0.5, 0.5, 0.5),
+                std=(0.5, 0.5, 0.5),
+                max_pixel_value=255.0),
     ToTensorV2()
 ])
 
@@ -52,13 +77,16 @@ def init_kaiming_for_conv(m):
             nn.init.constant_(m.bias, 0.0)
 
 class OverfitDataset(Dataset):
-    def __init__(self, ids):
+    def __init__(self, ids, tfms):
         self.ids = ids
+        self.tfms = tfms
 
     def __len__(self):
         return len(self.ids)
 
     def __getitem__(self, idx):
+        IMG_DIR = "data/images"
+        MASK_DIR = "data/masks"
         sid = self.ids[idx]
 
         img_path = os.path.join(IMG_DIR, sid + ".png")
@@ -72,15 +100,18 @@ class OverfitDataset(Dataset):
         img = cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB)
         mask = np.load(mask_path).astype(np.uint8)
 
-        aug = tfms(image=img, mask=mask)
-        # TODO this does normalization between 0-1, do we need -1, 1?
-        # SOL: No normalization for now
-        x = aug["image"].float() #/ 255.0          # [3,H,W]
-                                                            #TODO do we need normalization in first phase?
-        y = aug["mask"].unsqueeze(0).float()      # [1,H,W]
+        if self.tfms is not None:
+            augmented = self.tfms(image=img, mask=mask)
+            img = augmented["image"]
+            mask = augmented["mask"]
+
+        x = img.float()  # if not normalized yet
+        y = mask.unsqueeze(0).float()      # [1,H,W]
         return x, y
 
-def dice_loss(logits, targets, eps=1e-6):  #TODO why use this loss? why not use iou_score as loss?
+
+# -------------------- LOSS -----------------------
+def dice_loss(logits, targets, eps=1e-6):
     probs = torch.sigmoid(logits)
     inter = (probs * targets).sum(dim=(1,2,3))
     denom = probs.sum(dim=(1,2,3)) + targets.sum(dim=(1,2,3))
@@ -126,79 +157,30 @@ def evaluate_iou(model, loader, device):
 
 # ---------- main ----------
 
-def main():
-    # overfit subset
-    overfit_ids = read_ids("ids/val_ids_subsample.txt")
-    print("Loaded", len(overfit_ids), "overfit samples")
-    if len(overfit_ids) == 0:
-        raise RuntimeError("val_ids_subsample.txt is empty. Check how you generated it.")
+def main(train_loader, test_loader, model, optimizer, epochs, loss_func,
+         model_file, train_loss_file, test_loss_file, iou_file, device, scheduler=None, loss_finder=None):
+    train_losses = []
+    train_ious = []
+    test_epochs = []
+    test_ious = []
+    test_losses = []
+    train_history = []
 
-    # test split
-    test_ids = read_ids("ids/test_ids_subsample.txt")
-    print("Loaded", len(test_ids), "test samples")
-    if len(test_ids) == 0:
-        raise RuntimeError("test_ids_subsample.txt is empty.")
-
-    train_ds = OverfitDataset(overfit_ids)
-    test_ds = OverfitDataset(test_ids)
-
-    batch_size = min(4, len(train_ds))
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,
-        pin_memory=True #TODO what is pin memory?
-    )
-
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=4,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=True
-    )
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using device:", device)
-
-    model = Unet(
-        encoder_name="resnet34",  #TODO motivation why we chose this as starter
-        encoder_weights="imagenet",
-        in_channels=3,
-        classes=1
-    ).to(device)
-
-    #apply the kaiming init for decoder only
-    model.decoder.apply(init_kaiming_for_conv)
-    model.segmentation_head.apply(init_kaiming_for_conv)
-
-    # TODO motivate why using this optimizer with this learning rate
-    # Sol: move from Adam to basic SGD
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-    # TODO what is this
     scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
 
-    EPOCHS = 100
-    # best_train_iou = 0.0
-    # best_test_iou = 0.0
-
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(1, epochs + 1):
         # ----- train on overfit subset -----
         model.train()
         total_loss = 0.0
         n = 0
 
-        for x, y in tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS} [train]"):
-            x = x.to(device, non_blocking=True) #TODO what does non blocking do
+        for x, y in tqdm(train_loader, desc=f"Epoch {epoch}/{epochs} [train]"):
+            x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
 
-            # TODO what does set to none do
-            # Sol: some pytorch optim, move to end
-            # optimizer.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=(device.type == "cuda")):
                 logits = model(x)
-                loss = combined_loss(logits, y)
+                loss = loss_func(logits, y)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -207,35 +189,16 @@ def main():
 
             total_loss += loss.item() * x.size(0)
             n += x.size(0)
+            if loss_finder:
+                train_history.append(loss.item())
 
         avg_loss = total_loss / n
 
-        # ----- compute train IoU (still using current model in train mode) -----
-        total_iou_train = 0.0
-        n_train = 0
-        #TODO if we choose iou as loss function no need to do this again
-        #Sol iou is evaluation metric, but we still do not need this at every epoch
-        # with torch.no_grad():
-        #     for x, y in tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS} [train]"):
-        #         x = x.to(device)
-        #         y = y.to(device)
-        #         logits = model(x)
-        #         total_iou_train += iou_score(logits, y) * x.size(0)
-        #         n_train += x.size(0)
-        # train_iou = total_iou_train / n_train if n_train > 0 else 0.0
-
-        train_losses.append(avg_loss)
-        #train_ious.append(train_iou)
-
-
-        # log like the example: both train + test every epoch
-        if epoch == 1 or epoch % 10 == 0:
+        if epoch == 1 or epoch % 5 == 0:
             # ----- compute test IoU with model.eval() -----
             train_iou, _ = evaluate_iou(model, train_loader, device)
             test_iou, test_loss = evaluate_iou(model, test_loader, device)
 
-            #best_train_iou = max(best_train_iou, train_iou)
-            #best_test_iou = max(best_test_iou, test_iou)
             train_ious.append(train_iou)
             test_ious.append(test_iou)
             test_epochs.append(epoch)
@@ -246,21 +209,21 @@ def main():
                 f"train_loss={avg_loss:.4f} | test_loss={test_loss:.4f}"
             )
 
-    torch.save(model.state_dict(), "unet_overfit_subset_on_subsample_test_valid.pt")
-    print("Saved unet_overfit_subset_on_subsample_test_valid.pt")
-    #print(f"Best train IoU: {best_train_iou:.4f} | Best test IoU: {best_test_iou:.4f}")
-    print("If train IoU >> test IoU, you've clearly demonstrated overfitting.")
-    plot_loss(train_losses, val_losses=None,
-              save_path="plots/train_loss_curve_on_subsample_test_valid_weight_init.png")
+        if scheduler:
+            scheduler.step()
 
-    plot_loss(test_losses, val_losses=None,
-              save_path="plots/test_loss_curve_on_subsample_test_valid_weight_init.png")
+        train_losses.append(avg_loss)
 
-    # plot_iou(train_ious, test_ious, test_epochs,
-    #          save_path="plots/iou_curve_on_subsample_test_valid.png")
-    plot_iou(train_ious, test_ious,
-             save_path="plots/iou_curve_on_subsample_test_valid_weight_init.png")
+    os.makedirs(os.path.dirname(model_file), exist_ok=True)
+    torch.save(model.state_dict(), model_file)
+    print("Saved " + model_file)
+    plot_loss(train_losses, val_losses=None, epochs=list(range(1, len(train_losses)+1)), save_path=train_loss_file)
 
+    plot_loss(test_losses, val_losses=None, epochs=test_epochs, save_path=test_loss_file)
 
-if __name__ == "__main__":
-    main()
+    plot_iou(train_ious, test_ious=test_ious, epochs=test_epochs, save_path=iou_file)
+
+    if loss_finder:
+        return train_history
+
+    return None
