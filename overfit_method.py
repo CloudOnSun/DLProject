@@ -59,6 +59,27 @@ tfms_normalized = A.Compose([
     ToTensorV2()
 ])
 
+tfms_random_crop_normalized_encoder_vals = A.Compose([
+    A.RandomCrop(256, 256),
+    A.Normalize(
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+        max_pixel_value=255.0,  # assumes uint8 images in [0, 255]
+    ),
+    ToTensorV2()
+])
+
+tfms_val_normalized_encoder_vals = A.Compose([
+    A.CenterCrop(256, 256),  # or A.Resize(...) / nothing, depending on your setup
+    A.Normalize(
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+        max_pixel_value=255.0,
+    ),
+    ToTensorV2()
+])
+
+
 
 def init_kaiming_for_conv(m):
     if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
