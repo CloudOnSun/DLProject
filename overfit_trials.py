@@ -10,7 +10,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from overfit_method import main, read_ids, OverfitDataset, init_kaiming_for_conv, combined_loss, tfms_basic, \
-    tfms_random_crop, tfms_random_crop_normalized, tfms_normalized
+    tfms_random_crop, tfms_random_crop_normalized, tfms_normalized, tfms_random_crop_normalized_encoder_vals, \
+    tfms_val_normalized_encoder_vals
 
 
 def get_overfit_test_loaders(train_tfms, test_tfms):
@@ -325,5 +326,5 @@ def trial_with_weight_decay(train_loader, test_loader, dataset_split, trial_name
          device=device)
 
 if __name__ == "__main__":
-    train_loader, test_loader = get_train_test_loaders(tfms_random_crop_normalized, tfms_normalized)
+    train_loader, test_loader = get_train_test_loaders(tfms_random_crop_normalized_encoder_vals, tfms_val_normalized_encoder_vals)
     trial_lr_decay(train_loader, test_loader, "train_test_split", "normalize_data", "9")
