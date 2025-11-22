@@ -12,6 +12,7 @@ from tqdm import tqdm
 from overfit_method import main, read_ids, OverfitDataset, init_kaiming_for_conv, combined_loss, tfms_basic, \
     tfms_random_crop, tfms_random_crop_normalized, tfms_normalized
 
+# --- Loaders ---
 
 def get_overfit_test_loaders(train_tfms, test_tfms):
     overfit_ids = read_ids("ids/overfit_ids.txt")
@@ -111,6 +112,9 @@ def get_train_test_loaders(train_tfms, test_tfms):
     )
     return train_loader, test_loader
 
+
+# --- Trials ----
+
 def trial_basic_for_overfit(train_loader, test_loader, dataset_split, trial_name, trial_id):
     print("Running trial " + trial_name + " on dataset " + dataset_split + " id " + trial_id)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -137,7 +141,6 @@ def trial_basic_for_overfit(train_loader, test_loader, dataset_split, trial_name
          test_loss_file="plots/" + dataset_split + "/" + trial_name + "/test_loss_curve" + trial_id +".png",
          iou_file="plots/" + dataset_split + "/" + trial_name + "/iou_curve" + trial_id +".png",
          device=device)
-
 
 def trial_basic(train_loader, test_loader, dataset_split, trial_name, trial_id):
     print("Running trial " + trial_name + " on dataset " + dataset_split + " id " + trial_id)
@@ -199,6 +202,38 @@ def trial_lr_decay(train_loader, test_loader, dataset_split, trial_name, trial_i
          device=device,
          scheduler=scheduler)
 
+def trial_1_epoch_for_stats(train_loader, test_loader, dataset_split, trial_name, trial_id):
+    print("Running trial " + trial_name + " on dataset " + dataset_split + " id " + trial_id)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
+
+    model = Unet(
+        encoder_name="resnet34",
+        encoder_weights="imagenet",
+        in_channels=3,
+        classes=1
+    ).to(device)
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=1,
+        gamma=0.96  # multiply LR by
+    )
+    epochs = 1
+
+    main(train_loader=train_loader,
+         test_loader=test_loader,
+         model=model,
+         optimizer=optimizer,
+         epochs=epochs,
+         loss_func=combined_loss,
+         model_file="unet/unet_" + dataset_split + "_" + trial_name + ".pt",
+         train_loss_file="plots/" + dataset_split + "/" + trial_name + "/train_loss_curve" + trial_id +".png",
+         test_loss_file="plots/" + dataset_split + "/" + trial_name + "/test_loss_curve" + trial_id +".png",
+         iou_file="plots/" + dataset_split + "/" + trial_name + "/iou_curve" + trial_id +".png",
+         device=device,
+         scheduler=scheduler)
 
 def trial_with_weight_init(train_loader, test_loader, dataset_split, trial_name, trial_id):
     print("Running trial " + trial_name + " on dataset " + dataset_split + " id " + trial_id)
@@ -296,7 +331,6 @@ def trial_with_find_lr(train_loader, test_loader, dataset_split, trial_name, tri
     plt.savefig(save_path, dpi=150)
     plt.close()
 
-
 def trial_with_weight_decay(train_loader, test_loader, dataset_split, trial_name, trial_id):
     print("Running trial " + trial_name + " on dataset " + dataset_split + " id " + trial_id)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -326,4 +360,4 @@ def trial_with_weight_decay(train_loader, test_loader, dataset_split, trial_name
 
 if __name__ == "__main__":
     train_loader, test_loader = get_train_test_loaders(tfms_random_crop_normalized, tfms_normalized)
-    trial_lr_decay(train_loader, test_loader, "train_test_split", "normalize_data", "9")
+    trial_1_epoch_for_stats(train_loader, test_loader, "train_test_split", "1_epoch_model", "10")

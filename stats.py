@@ -98,8 +98,8 @@ def show_stats(stats, model_name):
     save_path = f"stats/{model_name}_activations.png"
     plot_hist_sampled(
         stats["activations"],
-        stats["names"],
-        step=7,
+        stats["activation_names"],
+        step=4,
         avg=stats["activation_mean"],
         sd=stats["activation_std"],
         save_path=save_path
@@ -130,7 +130,7 @@ def get_stats(model, dataloader, loss_func, device="cuda"):
     masks = masks.to(device)
 
     # ---- containers for activations / layer metadata ----
-    activations = []
+    activations = {}
     layer_names = []
     conv_modules = []     # to later fetch their weight gradients
     hooks = []
@@ -140,13 +140,13 @@ def get_stats(model, dataloader, loss_func, device="cuda"):
         if isinstance(module, nn.Conv2d):
             layer_names.append(name)
             conv_modules.append(module)
+        if isinstance(module, nn.ReLU):
+            def hook_fn(mod, inp, out, layer=name):
+                # store only first call per module
+                if layer not in activations:
+                    activations[layer] = out
 
-            def hook_fn(module, inputs, output, store=activations):
-                # store activations; no detach here, we’ll detach in stats
-                store.append(output)
-
-            h = module.register_forward_hook(hook_fn)
-            hooks.append(h)
+            hooks.append(module.register_forward_hook(hook_fn))
 
     # ---- forward pass ----
     model.zero_grad()
@@ -171,15 +171,16 @@ def get_stats(model, dataloader, loss_func, device="cuda"):
         h.remove()
 
     # ---- compute stats ----
-    activation_mean, activation_std = get_layer_stats(activations)
+    activation_mean, activation_std = get_layer_stats(list(activations.values()))
     gradient_mean, gradient_std = get_layer_stats(gradients, absolute=True)
 
     stats = {
         'loss': loss,
         'accuracy': acc,
         'names': layer_names,
+        'activation_names': list(activations.keys()),
         'grads': gradients,
-        'activations': activations,
+        'activations': list(activations.values()),
         'activation_mean': activation_mean,
         'activation_std': activation_std,
         'gradient_mean': gradient_mean,
