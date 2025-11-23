@@ -64,16 +64,34 @@ tfms_random_crop_normalized_encoder_vals = A.Compose([
     A.Normalize(
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
-        max_pixel_value=255.0,  # assumes uint8 images in [0, 255]
+        max_pixel_value=255.0,  # assumes uint8 images in [0, 255] https://docs.pytorch.org/vision/main/models/generated/torchvision.models.resnet34.html
     ),
     ToTensorV2()
 ])
 
 tfms_val_normalized_encoder_vals = A.Compose([
-    A.CenterCrop(256, 256),  # or A.Resize(...) / nothing, depending on your setup
     A.Normalize(
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
+        max_pixel_value=255.0,
+    ),
+    ToTensorV2()
+])
+
+tfms_random_crop_normalized_own_unet = A.Compose([
+    A.RandomCrop(256, 256),
+    A.Normalize(
+        mean=(0.3046, 0.3374, 0.2524),
+        std=(0.1629, 0.1456, 0.1368),
+        max_pixel_value=255.0,
+    ),
+    ToTensorV2()
+])
+
+tfms_val_normalized_own_unet = A.Compose([
+    A.Normalize(
+        mean=(0.3046, 0.3374, 0.2524),
+        std=(0.1629, 0.1456, 0.1368),
         max_pixel_value=255.0,
     ),
     ToTensorV2()

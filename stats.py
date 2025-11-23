@@ -140,7 +140,7 @@ def get_stats(model, dataloader, loss_func, device="cuda"):
         if isinstance(module, nn.Conv2d):
             layer_names.append(name)
             conv_modules.append(module)
-        if isinstance(module, nn.ReLU):
+        if isinstance(module, nn.ReLU) or isinstance(module, nn.LeakyReLU):
             def hook_fn(mod, inp, out, layer=name):
                 # store only first call per module
                 if layer not in activations:

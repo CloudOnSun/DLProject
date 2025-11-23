@@ -6,12 +6,15 @@ import torch
 from matplotlib import pyplot as plt
 from segmentation_models_pytorch import Unet
 from tensorflow.keras.optimizers.schedules import ExponentialDecay
+from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from myUnet import SmallResUNet
 from overfit_method import main, read_ids, OverfitDataset, init_kaiming_for_conv, combined_loss, tfms_basic, \
     tfms_random_crop, tfms_random_crop_normalized, tfms_normalized, tfms_random_crop_normalized_encoder_vals, \
-    tfms_val_normalized_encoder_vals
+    tfms_val_normalized_encoder_vals, tfms_random_crop_normalized_own_unet, tfms_val_normalized_own_unet
+
 
 # --- Loaders ---
 
@@ -182,11 +185,43 @@ def trial_lr_decay(train_loader, test_loader, dataset_split, trial_name, trial_i
         classes=1
     ).to(device)
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
         step_size=1,
-        gamma=0.96  # multiply LR by
+        gamma=0.97  # multiply LR by
+    )
+    epochs = 50
+
+    main(train_loader=train_loader,
+         test_loader=test_loader,
+         model=model,
+         optimizer=optimizer,
+         epochs=epochs,
+         loss_func=combined_loss,
+         model_file="unet/unet_" + dataset_split + "_" + trial_name + ".pt",
+         train_loss_file="plots/" + dataset_split + "/" + trial_name + "/train_loss_curve" + trial_id +".png",
+         test_loss_file="plots/" + dataset_split + "/" + trial_name + "/test_loss_curve" + trial_id +".png",
+         iou_file="plots/" + dataset_split + "/" + trial_name + "/iou_curve" + trial_id +".png",
+         device=device,
+         scheduler=scheduler)
+
+def trial_own_model(train_loader, test_loader, dataset_split, trial_name, trial_id):
+    print("Running trial " + trial_name + " on dataset " + dataset_split + " id " + trial_id)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
+
+    model = SmallResUNet(
+        in_channels=3,
+        num_classes=1,
+        base_channels=32,  # try 16 if you want it even smaller
+    ).to(device)
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.95)
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=1,
+        gamma=0.97  # multiply LR by
     )
     epochs = 50
 
@@ -359,6 +394,51 @@ def trial_with_weight_decay(train_loader, test_loader, dataset_split, trial_name
          iou_file="plots/" + dataset_split + "/" + trial_name + "/iou_curve" + trial_id +".png",
          device=device)
 
+def trial_leaky_relu(train_loader, test_loader, dataset_split, trial_name, trial_id):
+    print("Running trial " + trial_name + " on dataset " + dataset_split + " id " + trial_id)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
+
+    model = Unet(
+        encoder_name="resnet34",
+        encoder_weights="imagenet",
+        in_channels=3,
+        classes=1
+    ).to(device)
+
+    def replace_relu_with_leakyrelu(module, negative_slope=0.01):
+        for name, child in module.named_children():
+            if isinstance(child, nn.ReLU):
+                setattr(module, name, nn.LeakyReLU(negative_slope=negative_slope, inplace=True))
+            else:
+                replace_relu_with_leakyrelu(child)
+
+    # only on decoder, keep encoder ReLU as in the pretrained net
+    replace_relu_with_leakyrelu(model.decoder, negative_slope=0.01)
+
+    print("Model: ", model)
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=1,
+        gamma=0.96  # multiply LR by
+    )
+    epochs = 50
+
+    main(train_loader=train_loader,
+         test_loader=test_loader,
+         model=model,
+         optimizer=optimizer,
+         epochs=epochs,
+         loss_func=combined_loss,
+         model_file="unet/unet_" + dataset_split + "_" + trial_name + ".pt",
+         train_loss_file="plots/" + dataset_split + "/" + trial_name + "/train_loss_curve" + trial_id +".png",
+         test_loss_file="plots/" + dataset_split + "/" + trial_name + "/test_loss_curve" + trial_id +".png",
+         iou_file="plots/" + dataset_split + "/" + trial_name + "/iou_curve" + trial_id +".png",
+         device=device,
+         scheduler=scheduler)
+
 if __name__ == "__main__":
-    train_loader, test_loader = get_train_test_loaders(tfms_random_crop_normalized_encoder_vals, tfms_val_normalized_encoder_vals)
-    trial_lr_decay(train_loader, test_loader, "train_test_split", "normalize_data", "9")
+    train_loader, test_loader = get_train_test_loaders(tfms_random_crop_normalized_own_unet, tfms_val_normalized_own_unet)
+    trial_own_model(train_loader, test_loader, "train_test_split", "own_model_sgd_001", "17")

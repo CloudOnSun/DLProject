@@ -12,11 +12,11 @@ model = Unet(
         in_channels=3,
         classes=1
     ).to(device)
-state = torch.load("unet/unet_train_test_split_normalize_data.pt", map_location=device)
+state = torch.load("unet/unet_train_test_split_lr_001_adam.pt", map_location=device)
 model.load_state_dict(state)
 
 print(model)
 
 train_loader, test_loader = get_train_test_loaders(tfms_random_crop_normalized, tfms_normalized)
 stats = get_stats(model, train_loader, combined_loss)
-show_stats(stats, "unet_train_test_split_normalize_data")
+show_stats(stats, "unet_train_test_split_lr_001_adam")
