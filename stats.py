@@ -3,6 +3,7 @@ import os
 import torch
 from matplotlib import pyplot as plt
 from torch import nn
+from tqdm import tqdm
 
 from overfit_method import iou_score
 
@@ -189,3 +190,115 @@ def get_stats(model, dataloader, loss_func, device="cuda"):
 
     return stats
 
+
+def save_error_maps_per_image(
+    model,
+    loader,
+    device,
+    save_dir="plots/error_maps_per_image",
+    threshold=0.5,
+    denorm_mode="imagenet"
+):
+    """
+    For each image in the loader:
+      - Compute TP / FP / FN / TN masks
+      - Save a visualization:
+           Left: original RGB image
+           Right: error overlay (TP green, FP red, FN blue)
+      - Also return per-image confusion stats
+
+    Args:
+        model: trained segmentation model
+        loader: DataLoader for test set
+        device: cuda or cpu
+        save_dir: directory where per-image PNGs will be saved
+        threshold: threshold for binary prediction
+        denorm_mode: use "imagenet" to reverse normalization
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import cv2
+
+    def denormalize(x):
+        x = x.numpy()
+        mean = np.array([0.485, 0.456, 0.406]).reshape(3,1,1)
+        std  = np.array([0.229, 0.224, 0.225]).reshape(3,1,1)
+        x = x * std + mean
+        x = np.clip(x, 0, 1)
+        return np.transpose(x, (1,2,0))  # CHW -> HWC
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    model.eval()
+    all_results = []  # list of dicts, per-image confusion and IoU
+
+    with torch.no_grad():
+        idx_global = 0
+        for x, y in tqdm(loader, desc="Per-image error maps"):
+            x = x.to(device)
+            y = y.to(device)
+
+            logits = model(x)
+            probs = torch.sigmoid(logits)
+            preds = (probs > threshold).float()
+
+            # Loop over batch (usually batch size=1 here)
+            B = x.size(0)
+            for b in range(B):
+                img = x[b].cpu()
+                gt = (y[b,0] > 0.5).cpu().numpy()
+                pr = (preds[b,0] > 0.5).cpu().numpy()
+
+                # confusion maps
+                tp = (pr == 1) & (gt == 1)
+                fp = (pr == 1) & (gt == 0)
+                fn = (pr == 0) & (gt == 1)
+                tn = (pr == 0) & (gt == 0)
+
+                # compute per-image confusion counts
+                TP = tp.sum()
+                FP = fp.sum()
+                FN = fn.sum()
+                TN = tn.sum()
+                IoU = TP / (TP + FP + FN + 1e-6)
+
+                all_results.append({
+                    "index": idx_global,
+                    "TP": int(TP),
+                    "FP": int(FP),
+                    "FN": int(FN),
+                    "TN": int(TN),
+                    "IoU": float(IoU),
+                })
+
+                # visualization mask
+                H, W = gt.shape
+                overlay = np.zeros((H, W, 3), dtype=np.float32)
+                overlay[tp] = [0.00, 1.00, 0.00]  # green
+                overlay[fp] = [1.00, 0.00, 0.00]  # red
+                overlay[fn] = [0.00, 0.00, 1.00]  # blue
+
+                # original image (denormalized)
+                img_rgb = denormalize(img)
+
+                # plot
+                fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+                axs[0].imshow(img_rgb)
+                axs[0].set_title("Image")
+                axs[0].axis("off")
+
+                axs[1].imshow(img_rgb)
+                axs[1].imshow(overlay, alpha=0.5)
+                axs[1].set_title(
+                    f"TP/FP/FN overlay\nIoU={IoU:.3f}, TP={TP}, FP={FP}, FN={FN}"
+                )
+                axs[1].axis("off")
+
+                out_path = os.path.join(save_dir, f"error_map_{idx_global:04d}.png")
+                plt.tight_layout()
+                plt.savefig(out_path, dpi=150)
+                plt.close(fig)
+
+                idx_global += 1
+
+    return all_results

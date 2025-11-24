@@ -177,4 +177,4 @@ def predict_and_show(model: torch.nn.Module, tile_id: str, tfms,  device="cuda",
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Saved overlay to {save_path}")
 
-    plt.show()
+    # plt.show()

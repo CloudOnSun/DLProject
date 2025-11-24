@@ -13,7 +13,8 @@ from tqdm import tqdm
 from myUnet import SmallResUNet
 from overfit_method import main, read_ids, OverfitDataset, init_kaiming_for_conv, combined_loss, tfms_basic, \
     tfms_random_crop, tfms_random_crop_normalized, tfms_normalized, tfms_random_crop_normalized_encoder_vals, \
-    tfms_val_normalized_encoder_vals, tfms_random_crop_normalized_own_unet, tfms_val_normalized_own_unet
+    tfms_val_normalized_encoder_vals, tfms_random_crop_normalized_own_unet, tfms_val_normalized_own_unet, \
+    tfms_normalized_encoder_vals, combined_loss_boundary
 
 
 # --- Loaders ---
@@ -116,6 +117,26 @@ def get_train_test_loaders(train_tfms, test_tfms):
     )
     return train_loader, test_loader
 
+def get_test_loader_one_batch(test_tfms):
+    # test split
+    test_ids = read_ids("ids/test_ids_subsample.txt")
+    print("Loaded", len(test_ids), "test samples")
+    if len(test_ids) == 0:
+        raise RuntimeError("test_ids_subsample.txt is empty.")
+
+    test_ds = OverfitDataset(test_ids, tfms=test_tfms)
+
+    batch_size = 1
+
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True
+    )
+    return test_loader
+
 
 # --- Trials ----
 
@@ -185,13 +206,13 @@ def trial_lr_decay(train_loader, test_loader, dataset_split, trial_name, trial_i
         classes=1
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0003, momentum=0.95)
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
         step_size=1,
         gamma=0.97  # multiply LR by
     )
-    epochs = 50
+    epochs = 100
 
     main(train_loader=train_loader,
          test_loader=test_loader,
@@ -206,6 +227,40 @@ def trial_lr_decay(train_loader, test_loader, dataset_split, trial_name, trial_i
          device=device,
          scheduler=scheduler)
 
+def trial_boundary(train_loader, test_loader, dataset_split, trial_name, trial_id):
+    print("Running trial " + trial_name + " on dataset " + dataset_split + " id " + trial_id)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
+
+    model = Unet(
+        encoder_name="resnet34",
+        encoder_weights="imagenet",
+        in_channels=3,
+        classes=1
+    ).to(device)
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0003, momentum=0.95)
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=1,
+        gamma=0.97  # multiply LR by
+    )
+    epochs = 50
+
+    main(train_loader=train_loader,
+         test_loader=test_loader,
+         model=model,
+         optimizer=optimizer,
+         epochs=epochs,
+         loss_func=combined_loss_boundary,
+         model_file="unet/unet_" + dataset_split + "_" + trial_name + ".pt",
+         train_loss_file="plots/" + dataset_split + "/" + trial_name + "/train_loss_curve" + trial_id +".png",
+         test_loss_file="plots/" + dataset_split + "/" + trial_name + "/test_loss_curve" + trial_id +".png",
+         iou_file="plots/" + dataset_split + "/" + trial_name + "/iou_curve" + trial_id +".png",
+         device=device,
+         scheduler=scheduler)
+
+
 def trial_own_model(train_loader, test_loader, dataset_split, trial_name, trial_id):
     print("Running trial " + trial_name + " on dataset " + dataset_split + " id " + trial_id)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -217,11 +272,11 @@ def trial_own_model(train_loader, test_loader, dataset_split, trial_name, trial_
         base_channels=32,  # try 16 if you want it even smaller
     ).to(device)
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.95)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
         step_size=1,
-        gamma=0.97  # multiply LR by
+        gamma=0.9  # multiply LR by
     )
     epochs = 50
 
@@ -322,11 +377,67 @@ def trial_with_find_lr(train_loader, test_loader, dataset_split, trial_name, tri
     def lr_finder(t, T, lr):
         return lr_list[t - 1]
 
-    # apply the kaiming init for decoder only
-    model.decoder.apply(init_kaiming_for_conv)
-    model.segmentation_head.apply(init_kaiming_for_conv)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.95)
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    loss_func=combined_loss
+
+    train_loss_history = []
+
+    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+
+    for epoch in range(1, epochs + 1):
+        # ----- train on overfit subset -----
+        model.train()
+
+        for x, y in tqdm(train_loader, desc=f"Epoch {epoch}/{epochs} [train]"):
+            optimizer.param_groups[0]['lr'] = lr_finder(t, T, lr=optimizer.param_groups[0]['lr'])
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+
+            with torch.cuda.amp.autocast(enabled=(device.type == "cuda")):
+                logits = model(x)
+                loss = loss_func(logits, y)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+
+            train_loss_history.append(loss.item())
+            t += 1
+
+
+    plt.figure()
+    plt.plot(lr_list, train_loss_history)
+    plt.xscale('log')  # Use log scale on x-axis
+    plt.xlabel('Learning rate')
+    plt.ylabel('Loss')
+
+    save_path = "plots/" + dataset_split + "/" + trial_name + "/learning_rates" + trial_id +".png"
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+
+def trial_with_find_lr_own_model(train_loader, test_loader, dataset_split, trial_name, trial_id):
+    print("Running trial " + trial_name + " on dataset " + dataset_split + " id " + trial_id)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
+
+    model = SmallResUNet(
+        in_channels=3,
+        num_classes=1,
+        base_channels=32,  # try 16 if you want it even smaller
+    ).to(device)
+
+    epochs = 1
+    t = 1
+    T = 147
+    lr_list = np.logspace(-6, 0, 147)
+
+    def lr_finder(t, T, lr):
+        return lr_list[t - 1]
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.95)
 
     loss_func=combined_loss
 
@@ -440,5 +551,5 @@ def trial_leaky_relu(train_loader, test_loader, dataset_split, trial_name, trial
          scheduler=scheduler)
 
 if __name__ == "__main__":
-    train_loader, test_loader = get_train_test_loaders(tfms_random_crop_normalized_own_unet, tfms_val_normalized_own_unet)
-    trial_own_model(train_loader, test_loader, "train_test_split", "own_model_sgd_001", "17")
+    train_loader, test_loader = get_train_test_loaders(tfms_random_crop_normalized_encoder_vals, tfms_val_normalized_encoder_vals)
+    trial_boundary(train_loader, test_loader, "train_test_split", "boundary_0003_50_ep", "26")

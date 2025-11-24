@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
+from matplotlib import pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from segmentation_models_pytorch import Unet
@@ -11,6 +12,7 @@ from albumentations.pytorch import ToTensorV2
 from plot_utils import plot_loss, plot_iou
 import torch.nn as nn
 import torch.nn.init as init
+import torch.nn.functional as F
 
 
 # ---------- Data Loading ----------
@@ -26,6 +28,23 @@ def norm_collate(batch):
     xs = xs * 2.0 - 1.0             # now in [-1, 1]
 
     return xs, ys
+
+def denormalize_image(x, mode="imagenet"):
+    """
+    x: torch tensor [3, H, W] on CPU
+    returns: numpy [H, W, 3] in [0,1]
+    """
+    img = x.numpy()
+
+    if mode == "imagenet":
+        mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
+        std  = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
+        img = img * std + mean
+
+    img = np.clip(img, 0.0, 1.0)
+    img = np.transpose(img, (1, 2, 0))  # CHW -> HWC
+    return img
+
 
 def read_ids(path):
     if not os.path.exists(path):
@@ -56,6 +75,15 @@ tfms_normalized = A.Compose([
     A.Normalize(mean=(0.5, 0.5, 0.5),
                 std=(0.5, 0.5, 0.5),
                 max_pixel_value=255.0),
+    ToTensorV2()
+])
+
+tfms_normalized_encoder_vals = A.Compose([
+    A.Normalize(
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+        max_pixel_value=255.0,  # assumes uint8 images in [0, 255] https://docs.pytorch.org/vision/main/models/generated/torchvision.models.resnet34.html
+    ),
     ToTensorV2()
 ])
 
@@ -115,6 +143,165 @@ def init_kaiming_for_conv(m):
         if m.bias is not None:
             nn.init.constant_(m.bias, 0.0)
 
+# -------------------- HEATMAP -----------------------
+def gradcam_decoder_for_loader(
+    model,
+    loader,
+    device,
+    save_dir="plots/gradcam_decoder",
+    threshold=None,
+    denorm_mode="imagenet",
+    max_samples=None,
+):
+    """
+    Compute Grad-CAM based on the *decoder* output feature maps and save
+    overlay images for samples from `loader`.
+
+    - We hook the last decoder conv layer (e.g. model.decoder.blocks[-1].conv2)
+    - Target score: mean of the logit map for the building class
+      (since it's a single-channel seg model).
+
+    Args:
+        model: Unet from segmentation_models_pytorch
+        loader: DataLoader yielding (x, y)
+        device: torch.device
+        save_dir: root dir to save PNGs
+        threshold: not used for Grad-CAM itself, but can be used later if you want
+        denorm_mode: how to denormalize the input images
+        max_samples: limit number of Grad-CAM images (None = all)
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    # ---- choose target layer: last decoder conv ----
+    # This assumes SMP Unet with .decoder.blocks[-1].conv2 existing.
+    target_layer = model.decoder.blocks[-1].conv2
+
+    activations = []
+    gradients = []
+
+    def forward_hook(module, inp, out):
+        activations.append(out)
+
+    def backward_hook(module, grad_in, grad_out):
+        # grad_out is a tuple; [0] is grad wrt module output
+        gradients.append(grad_out[0])
+
+    # register hooks
+    fwd_handle = target_layer.register_forward_hook(forward_hook)
+    bwd_handle = target_layer.register_backward_hook(backward_hook)
+
+    was_training = model.training
+    model.eval()
+
+    sample_idx = 0
+
+    with torch.no_grad():  # we'll manually enable grad for CAM step
+        pass  # just to highlight we won't use this block
+
+    # We *do* need gradients for Grad-CAM, so don't wrap whole loop in no_grad
+    with torch.enable_grad():
+        for batch_idx, (x, y) in enumerate(tqdm(loader, desc="Grad-CAM decoder")):
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+
+            B = x.size(0)
+            for b in range(B):
+                if max_samples is not None and sample_idx >= max_samples:
+                    break
+
+                # Clear previous hooks data
+                activations.clear()
+                gradients.clear()
+                torch.cuda.empty_cache()
+
+                # Run forward again for this single sample so activations/grads align
+                xb = x[b:b+1]  # [1, C, H, W]
+                logits_b = model(xb)  # [1, 1, H, W]
+
+                # scalar target: mean logit over spatial map
+                score = logits_b[0, 0].mean()
+
+                model.zero_grad()
+                score.backward(retain_graph=True)
+
+                if len(activations) == 0 or len(gradients) == 0:
+                    print("Warning: no activations/gradients captured for Grad-CAM.")
+                    continue
+
+                # get last captured
+                act = activations[-1][0]    # [C, H', W']
+                grad = gradients[-1][0]     # [C, H', W']
+
+                # global average pool gradient over spatial dims -> weights
+                # alpha_k = mean_{i,j} grad_{k,i,j}
+                weights = grad.mean(dim=(1, 2))  # [C]
+
+                # weighted sum over channels
+                cam = (weights.view(-1, 1, 1) * act).sum(dim=0)  # [H', W']
+
+                # ReLU
+                cam = torch.relu(cam)
+
+                # normalize CAM to [0,1]
+                cam -= cam.min()
+                if cam.max() > 0:
+                    cam /= cam.max()
+
+                cam = cam.detach().cpu().numpy()
+
+                # upsample CAM to input resolution
+                _, _, H, W = xb.shape
+                cam_resized = cv2.resize(cam, (W, H))
+
+                # get input image on CPU and denormalize
+                img_tensor = xb[0].detach().cpu()  # [3, H, W]
+                img = denormalize_image(img_tensor, mode=denorm_mode)  # [H, W, 3]
+
+                # build a color heatmap from CAM
+                # use OpenCV colormap for convenience
+                heatmap = cv2.applyColorMap(
+                    (cam_resized * 255).astype(np.uint8),
+                    cv2.COLORMAP_JET
+                )
+                heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB) / 255.0
+
+                # overlay: mix original image with heatmap
+                overlay = 0.5 * img + 0.5 * heatmap
+                overlay = np.clip(overlay, 0.0, 1.0)
+
+                # plot and save
+                fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+                axs[0].imshow(img)
+                axs[0].set_title("Input image")
+                axs[0].axis("off")
+
+                axs[1].imshow(cam_resized, cmap="jet")
+                axs[1].set_title("Grad-CAM (decoder)")
+                axs[1].axis("off")
+
+                axs[2].imshow(overlay)
+                axs[2].set_title("Overlay")
+                axs[2].axis("off")
+
+                plt.tight_layout()
+                save_path = os.path.join(save_dir, f"gradcam_decoder_{sample_idx:04d}.png")
+                plt.savefig(save_path, dpi=150)
+                plt.close(fig)
+
+                sample_idx += 1
+
+            if max_samples is not None and sample_idx >= max_samples:
+                break
+
+    # remove hooks
+    fwd_handle.remove()
+    bwd_handle.remove()
+
+    if was_training:
+        model.train()
+
+
+
 class OverfitDataset(Dataset):
     def __init__(self, ids, tfms):
         self.ids = ids
@@ -156,6 +343,26 @@ def dice_loss(logits, targets, eps=1e-6):
     denom = probs.sum(dim=(1,2,3)) + targets.sum(dim=(1,2,3))
     dice = (2 * inter + eps) / (denom + eps)
     return 1 - dice.mean()
+
+def boundary_weight_map(targets, alpha=4.0):
+    with torch.no_grad():
+        # dilation via maxpool
+        dil = F.max_pool2d(targets, kernel_size=3, stride=1, padding=1)
+        # erosion via maxpool on inverted mask
+        ero = 1 - F.max_pool2d(1 - targets, kernel_size=3, stride=1, padding=1)
+        boundary = (dil - ero).abs()            # 1 at boundary, 0 elsewhere
+
+        weights = 1.0 + alpha * boundary        # 1 for non-boundary, 1+alpha at boundary
+    return weights
+
+def combined_loss_boundary(logits, targets, alpha=4.0):
+    # targets should be float in {0,1}, [B,1,H,W]
+    weights = boundary_weight_map(targets, alpha=alpha)  # [B,1,H,W]
+    bce = F.binary_cross_entropy_with_logits(
+        logits, targets, weight=weights
+    )
+    dice = dice_loss(logits, targets)
+    return bce + dice
 
 def combined_loss(logits, targets):
     bce = nn.BCEWithLogitsLoss()
