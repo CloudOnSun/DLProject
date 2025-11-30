@@ -8,21 +8,28 @@ from tqdm import tqdm
 from overfit_method import iou_score
 
 
-def plot_hist(hs,xrange=(-1,1),avg=None,sd=None):
-  plt.figure(figsize=(20,3))
-  for layer in range(len(hs)):
-    plt.subplot(1,len(hs),layer+1)
-    activations = hs[layer].detach().cpu().numpy().flatten()
-    plt.hist(activations, bins=20, range=xrange)
+# ---------------------------------------------------------------------
+# BASIC HISTOGRAM (kept for completeness)
+# ---------------------------------------------------------------------
+def plot_hist(hs, xrange=(-1, 1), avg=None, sd=None):
+    plt.figure(figsize=(20, 3))
+    for layer in range(len(hs)):
+        plt.subplot(1, len(hs), layer + 1)
+        activations = hs[layer].detach().cpu().numpy().flatten()
+        plt.hist(activations, bins=20, range=xrange)
 
-    title = 'Layer ' + str(layer+1)
-    if avg:
-      title += '\n' + "mean {0:.2f}".format(avg[layer])
-    if sd:
-      title += '\n' + "std {0:.4f}".format(sd[layer])
+        title = "Layer " + str(layer + 1)
+        if avg:
+            title += "\n" + "mean {0:.2f}".format(avg[layer])
+        if sd:
+            title += "\n" + "std {0:.4f}".format(sd[layer])
 
-    plt.title(title)
+        plt.title(title)
 
+
+# ---------------------------------------------------------------------
+# CHUNKED HISTOGRAMS (unused at the moment, kept just in case)
+# ---------------------------------------------------------------------
 def plot_hist_chunked(hs, names, chunk_size=6, avg=None, sd=None):
     n_layers = len(hs)
     for start in range(0, n_layers, chunk_size):
@@ -30,7 +37,7 @@ def plot_hist_chunked(hs, names, chunk_size=6, avg=None, sd=None):
         plt.figure(figsize=(22, 4))
 
         for idx, layer in enumerate(range(start, end), 1):
-            plt.subplot(1, end-start, idx)
+            plt.subplot(1, end - start, idx)
             activations = hs[layer].detach().cpu().numpy().flatten()
             plt.hist(activations, bins=20)
 
@@ -45,7 +52,19 @@ def plot_hist_chunked(hs, names, chunk_size=6, avg=None, sd=None):
         plt.tight_layout()
         plt.show()
 
-def plot_hist_sampled(hs, names, step=7, avg=None, sd=None, save_path=None):
+
+# ---------------------------------------------------------------------
+# SAMPLE EVERY N-TH LAYER, WITH FIXED X-AXIS IF GIVEN
+# ---------------------------------------------------------------------
+def plot_hist_sampled(
+    hs,
+    names,
+    step=7,
+    avg=None,
+    sd=None,
+    save_path=None,
+    xlim=None,  # (min, max) for shared x-axis
+):
     # Select indices: 0, step, 2*step, ...
     sampled_indices = list(range(0, len(hs), step))
 
@@ -55,7 +74,12 @@ def plot_hist_sampled(hs, names, step=7, avg=None, sd=None, save_path=None):
     for i, layer_idx in enumerate(sampled_indices):
         plt.subplot(1, n, i + 1)
         activ = hs[layer_idx].detach().cpu().numpy().flatten()
-        plt.hist(activ, bins=20)
+
+        # FIXED RANGE FOR ALL HISTOGRAMS IF xlim IS PROVIDED
+        if xlim is not None:
+            plt.hist(activ, bins=20, range=xlim)
+        else:
+            plt.hist(activ, bins=20)
 
         title = names[layer_idx]
         if avg:
@@ -72,16 +96,62 @@ def plot_hist_sampled(hs, names, step=7, avg=None, sd=None, save_path=None):
     plt.show()
 
 
+# ---------------------------------------------------------------------
+# STATS HELPERS
+# ---------------------------------------------------------------------
+def get_layer_stats(x, absolute=False):
+    avg = []
+    std = []
+    for layer in range(len(x)):
+        if absolute:
+            avg.append(x[layer].abs().mean().detach().cpu().numpy())
+        else:
+            avg.append(x[layer].mean().detach().cpu().numpy())
+
+        std.append(x[layer].std().detach().cpu().numpy())
+
+    return avg, std
 
 
+def get_percentile_range(tensors, lower=1.0, upper=99.0, symmetric=False):
+    """
+    Compute a global [lower, upper] percentile range across a list of tensors.
+    This ignores extreme outliers so the histograms are nicely zoomed in.
+    """
+    # collect a subsample of values to keep it cheap
+    samples = []
+    max_per_tensor = 100_000  # cap number of elements per tensor
+
+    for t in tensors:
+        t_flat = t.detach().float().view(-1)
+        if t_flat.numel() > max_per_tensor:
+            idx = torch.randint(0, t_flat.numel(), (max_per_tensor,), device=t_flat.device)
+            t_flat = t_flat[idx]
+        samples.append(t_flat.cpu())
+
+    all_vals = torch.cat(samples, dim=0)
+    lo = torch.quantile(all_vals, lower / 100.0).item()
+    hi = torch.quantile(all_vals, upper / 100.0).item()
+
+    if symmetric:
+        m = max(abs(lo), abs(hi))
+        return -m, m
+    else:
+        return lo, hi
+
+
+# ---------------------------------------------------------------------
+# SHOW + SAVE STATS WITH SHARED, ZOOMED X-AXES
+# ---------------------------------------------------------------------
 def show_stats(stats, model_name):
 
-    print('loss', stats['loss'].item())
-    print('accuracy', stats['accuracy'], '\n')
+    print("loss", stats["loss"].item())
+    print("accuracy", stats["accuracy"], "\n")
 
-    # -----------------------
-    # GRADIENT HISTOGRAMS
-    # -----------------------
+    # ===== ZOOMED, FIXED X-AXIS RANGE FOR GRADIENTS =====
+    # use symmetric range around 0 based on 1st–99th percentiles
+    gmin, gmax = get_percentile_range(stats["grads"], lower=1.0, upper=99.0, symmetric=True)
+
     save_path = f"stats/{model_name}_gradients.png"
     plot_hist_sampled(
         stats["grads"],
@@ -89,12 +159,14 @@ def show_stats(stats, model_name):
         step=7,
         avg=stats["gradient_mean"],
         sd=stats["gradient_std"],
-        save_path=save_path
+        save_path=save_path,
+        xlim=(gmin, gmax),
     )
 
-    # -----------------------
-    # ACTIVATION HISTOGRAMS
-    # -----------------------
+    # ===== ZOOMED, FIXED X-AXIS RANGE FOR ACTIVATIONS (ReLU outputs) =====
+    # ReLU activations are nonnegative; we clip upper end with 1st–99th percentiles
+    amin, amax = get_percentile_range(stats["activations"], lower=1.0, upper=99.0, symmetric=False)
+    amin = max(0.0, amin)  # in case of any tiny negative numerical noise
 
     save_path = f"stats/{model_name}_activations.png"
     plot_hist_sampled(
@@ -103,25 +175,18 @@ def show_stats(stats, model_name):
         step=4,
         avg=stats["activation_mean"],
         sd=stats["activation_std"],
-        save_path=save_path
+        save_path=save_path,
+        xlim=(amin, amax),
     )
+
     plt.close()
 
-def get_layer_stats(x,absolute=False):
-  avg = []
-  std = []
-  for layer in range(len(x)):
-    if absolute:
-      avg.append(x[layer].abs().mean().detach().cpu().numpy())
-    else:
-      avg.append(x[layer].mean().detach().cpu().numpy())
 
-    std.append(x[layer].std().detach().cpu().numpy())
-
-  return avg, std
-
-
+# ---------------------------------------------------------------------
+# MAIN: COLLECT GRADIENTS (Conv2d weights) + ACTIVATIONS (ReLU outputs)
+# ---------------------------------------------------------------------
 def get_stats(model, dataloader, loss_func, device="cuda"):
+    model.to(device)
     model.train()  # we want gradients
 
     # ---- grab one batch ----
@@ -131,19 +196,23 @@ def get_stats(model, dataloader, loss_func, device="cuda"):
     masks = masks.to(device)
 
     # ---- containers for activations / layer metadata ----
-    activations = {}
-    layer_names = []
+    activations = {}      # {layer_name: tensor} for ReLU/LeakyReLU outputs
+    layer_names = []      # Conv layer names
     conv_modules = []     # to later fetch their weight gradients
     hooks = []
 
-    # ---- register forward hooks on Conv2d layers ----
+    # ---- register forward hooks ----
     for name, module in model.named_modules():
+        # Conv2d: we only store them for gradients
         if isinstance(module, nn.Conv2d):
             layer_names.append(name)
             conv_modules.append(module)
-        if isinstance(module, nn.ReLU) or isinstance(module, nn.LeakyReLU):
+
+        # ReLU or LeakyReLU: capture post-activation outputs
+        if isinstance(module, (nn.ReLU, nn.LeakyReLU)):
+
             def hook_fn(mod, inp, out, layer=name):
-                # store only first call per module
+                # store only first call per module so we get 1 activation per layer
                 if layer not in activations:
                     activations[layer] = out
 
@@ -151,20 +220,19 @@ def get_stats(model, dataloader, loss_func, device="cuda"):
 
     # ---- forward pass ----
     model.zero_grad()
-    scores = model(images)              # predictions (UNet output)
+    scores = model(images)  # predictions (UNet output)
     loss = loss_func(scores, masks)
     acc = iou_score(scores, masks)
 
     # ---- backward pass (grads) ----
     loss.backward()
 
-    # ---- collect gradients for the same layers (their weights) ----
+    # ---- collect gradients for Conv2d weights ----
     gradients = []
     for m in conv_modules:
         if m.weight.grad is not None:
             gradients.append(m.weight.grad)
         else:
-            # Just in case something has no grad
             gradients.append(torch.zeros_like(m.weight))
 
     # ---- remove hooks to avoid side-effects later ----
@@ -172,20 +240,21 @@ def get_stats(model, dataloader, loss_func, device="cuda"):
         h.remove()
 
     # ---- compute stats ----
-    activation_mean, activation_std = get_layer_stats(list(activations.values()))
+    activation_tensors = list(activations.values())
+    activation_mean, activation_std = get_layer_stats(activation_tensors)
     gradient_mean, gradient_std = get_layer_stats(gradients, absolute=True)
 
     stats = {
-        'loss': loss,
-        'accuracy': acc,
-        'names': layer_names,
-        'activation_names': list(activations.keys()),
-        'grads': gradients,
-        'activations': list(activations.values()),
-        'activation_mean': activation_mean,
-        'activation_std': activation_std,
-        'gradient_mean': gradient_mean,
-        'gradient_std': gradient_std
+        "loss": loss,
+        "accuracy": acc,
+        "names": layer_names,
+        "activation_names": list(activations.keys()),
+        "grads": gradients,
+        "activations": activation_tensors,
+        "activation_mean": activation_mean,
+        "activation_std": activation_std,
+        "gradient_mean": gradient_mean,
+        "gradient_std": gradient_std,
     }
 
     return stats

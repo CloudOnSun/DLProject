@@ -8,15 +8,15 @@ from shapely import wkt
 
 # ---------------- CONFIG ----------------
 LABEL_DIR = "data/labels"              # where your *.json files live
-OUT_CSV_SELECTED = "selected_images_splits.csv"
-OUT_CSV_ALL      = "all_images_stats.csv"
+OUT_CSV_SELECTED = "selected_images_splits_60.csv"
+OUT_CSV_ALL      = "all_images_stats_60.csv"
 
 # only use pre-disaster labels
 def is_pre_disaster(filename: str) -> bool:
     # adjust if your naming scheme differs
     return filename.endswith("_pre_disaster.json")
 
-KEEP_FRACTION = 0.3   # e.g. keep 30% of images overall (tune this!)
+KEEP_FRACTION = 0.6   # e.g. keep 30% of images overall (tune this!)
 
 # ratio bins: [edge0, edge1), [edge1, edge2), ...
 # you can later update these after inspecting the plots
@@ -229,9 +229,9 @@ def main():
                 f.write(item + "\n")
         print(f"Wrote {len(items)} IDs to {path}")
 
-    write_list("ids/train_ids_subsample.txt", train_ids)
-    write_list("ids/val_ids_subsample.txt", val_ids)
-    write_list("ids/test_ids_subsample.txt", test_ids)
+    write_list("ids/train_ids_subsample_60.txt", train_ids)
+    write_list("ids/val_ids_subsample_60.txt", val_ids)
+    write_list("ids/test_ids_subsample_60.txt", test_ids)
 
 
 if __name__ == "__main__":

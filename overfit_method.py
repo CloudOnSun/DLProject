@@ -14,6 +14,8 @@ import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 
+from random_buildig_crop import RandomBuildingCrop
+
 
 # ---------- Data Loading ----------
 
@@ -125,6 +127,99 @@ tfms_val_normalized_own_unet = A.Compose([
     ToTensorV2()
 ])
 
+tfms_building_focus_train = A.Compose([
+    RandomBuildingCrop(256, 256, p_focus=0.9),
+    A.Normalize(
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+        max_pixel_value=255.0,
+    ),
+    ToTensorV2()
+])
+
+tfms_colour_bright_aug_data_train = A.Compose([
+    A.RandomCrop(256, 256),
+
+    # ----- color / brightness augmentations -----
+    A.RandomBrightnessContrast(
+        brightness_limit=0.3,
+        contrast_limit=0.3,
+        p=0.8
+    ),
+
+    A.ColorJitter(
+        brightness=0.2,
+        contrast=0.2,
+        saturation=0.2,
+        hue=0.02,
+        p=0.5
+    ),
+
+    A.RandomGamma(
+        gamma_limit=(70, 130),
+        p=0.5
+    ),
+
+    A.Normalize(
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+        max_pixel_value=255.0,
+    ),
+    ToTensorV2(),
+])
+
+
+def iou_score_split(logits, targets, thr=0.5, eps=1e-6):
+    probs = torch.sigmoid(logits)
+    preds = (probs > thr).float()
+    t = (targets > 0.5).float()
+
+    # ---------- BUILDING (foreground = 1) ----------
+    inter_fg = (preds * t).sum(dim=(1, 2, 3))
+    union_fg = ((preds + t) > 0).float().sum(dim=(1, 2, 3))
+    iou_fg = (inter_fg + eps) / (union_fg + eps)
+
+    # ---------- BACKGROUND (non-building = 0) ----------
+    t_bg = 1 - t         # background mask
+    preds_bg = 1 - preds
+    inter_bg = (preds_bg * t_bg).sum(dim=(1, 2, 3))
+    union_bg = ((preds_bg + t_bg) > 0).float().sum(dim=(1, 2, 3))
+    iou_bg = (inter_bg + eps) / (union_bg + eps)
+
+    return iou_fg.mean().item(), iou_bg.mean().item()
+
+
+# ------------------------------------------------------------
+#  MAIN EVALUATION FUNCTION
+# ------------------------------------------------------------
+def evaluate_iou_split(model, test_loader, device="cuda"):
+    was_training = model.training
+    model.eval()
+    model.to(device)
+
+    fg_scores = []
+    bg_scores = []
+
+    with torch.no_grad():
+        for imgs, masks in test_loader:
+            imgs = imgs.to(device)
+            masks = masks.to(device)
+
+            logits = model(imgs)
+            iou_fg, iou_bg = iou_score_split(logits, masks)
+
+            fg_scores.append(iou_fg)
+            bg_scores.append(iou_bg)
+
+    mean_fg = sum(fg_scores) / len(fg_scores)
+    mean_bg = sum(bg_scores) / len(bg_scores)
+
+    print(f"Building IoU:      {mean_fg:.4f}")
+    print(f"Background IoU:    {mean_bg:.4f}")
+    if was_training:
+        model.train()
+
+    return mean_fg, mean_bg
 
 
 def init_kaiming_for_conv(m):
@@ -354,6 +449,47 @@ def boundary_weight_map(targets, alpha=4.0):
 
         weights = 1.0 + alpha * boundary        # 1 for non-boundary, 1+alpha at boundary
     return weights
+
+def hnm_negative_loss(logits, targets, weights, neg_ratio=0.25):
+    bce = F.binary_cross_entropy_with_logits(
+        logits, targets, weight=weights, reduction='none'
+    )  # [B,1,H,W]
+
+    bce = bce.view(bce.size(0), -1)
+    targets = targets.view(targets.size(0), -1)
+
+    losses = []
+    for i in range(bce.size(0)):
+        loss_vec = bce[i]           # all pixels' losses
+        tgt_vec = targets[i]        # all pixels' GT labels
+
+        neg_mask = (tgt_vec == 0)
+        neg_losses = loss_vec[neg_mask]
+
+        if len(neg_losses) > 0:
+            k = max(1, int(len(neg_losses) * neg_ratio))
+            topk, _ = torch.topk(neg_losses, k)
+            losses.append(topk.mean())
+        else:
+            losses.append(torch.tensor(0.0, device=logits.device))
+
+    return torch.stack(losses).mean()
+
+
+def combined_boundary_hnm_loss(logits, targets, alpha=4.0, neg_ratio=0.25, hnm_weight=0.5):
+    weights = boundary_weight_map(targets, alpha=alpha)
+    bce = F.binary_cross_entropy_with_logits(
+        logits, targets, weight=weights
+    )
+    dice = dice_loss(logits, targets)
+    hnm = hnm_negative_loss(
+        logits=logits,
+        targets=targets,
+        weights=weights,
+        neg_ratio=neg_ratio
+    )
+    return bce + dice + hnm_weight * hnm
+
 
 def combined_loss_boundary(logits, targets, alpha=4.0):
     # targets should be float in {0,1}, [B,1,H,W]
