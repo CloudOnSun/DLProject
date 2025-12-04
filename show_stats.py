@@ -2,10 +2,10 @@ import torch
 from segmentation_models_pytorch import Unet
 
 from myUnet import SmallResUNet
-from overfit_method import tfms_random_crop_normalized, tfms_normalized, combined_loss, \
+from method import tfms_random_crop_normalized, tfms_normalized, combined_loss, \
     tfms_random_crop_normalized_encoder_vals, tfms_normalized_encoder_vals, tfms_val_normalized_encoder_vals, \
     tfms_building_focus_train, evaluate_iou_split
-from overfit_trials import get_train_test_loaders
+from trials import get_train_test_loaders
 from stats import get_stats, show_stats
 
 device = "cuda" if torch.cuda.is_available() else "cpu"

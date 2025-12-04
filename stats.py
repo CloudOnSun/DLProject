@@ -5,7 +5,7 @@ from matplotlib import pyplot as plt
 from torch import nn
 from tqdm import tqdm
 
-from overfit_method import iou_score
+from method import iou_score
 
 
 # ---------------------------------------------------------------------

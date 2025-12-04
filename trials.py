@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from myUnet import SmallResUNet
-from overfit_method import main, read_ids, OverfitDataset, init_kaiming_for_conv, combined_loss, tfms_basic, \
+from method import main, read_ids, BuildingDataset, init_kaiming_for_conv, combined_loss, tfms_basic, \
     tfms_random_crop, tfms_random_crop_normalized, tfms_normalized, tfms_random_crop_normalized_encoder_vals, \
     tfms_val_normalized_encoder_vals, tfms_random_crop_normalized_own_unet, tfms_val_normalized_own_unet, \
     tfms_normalized_encoder_vals, combined_loss_boundary, tfms_building_focus_train,tfms_colour_bright_aug_data_train
@@ -31,8 +31,8 @@ def get_overfit_test_loaders(train_tfms, test_tfms):
     if len(test_ids) == 0:
         raise RuntimeError("test_ids_subsample.txt is empty.")
 
-    train_ds = OverfitDataset(overfit_ids, tfms=train_tfms)
-    test_ds = OverfitDataset(test_ids, tfms=test_tfms)
+    train_ds = BuildingDataset(overfit_ids, tfms=train_tfms)
+    test_ds = BuildingDataset(test_ids, tfms=test_tfms)
 
     train_loader = DataLoader(
         train_ds,
@@ -63,8 +63,8 @@ def get_valid_test_loaders(train_tfms, test_tfms):
     if len(test_ids) == 0:
         raise RuntimeError("test_ids_subsample.txt is empty.")
 
-    train_ds = OverfitDataset(overfit_ids, tfms=train_tfms)
-    test_ds = OverfitDataset(test_ids, tfms=test_tfms)
+    train_ds = BuildingDataset(overfit_ids, tfms=train_tfms)
+    test_ds = BuildingDataset(test_ids, tfms=test_tfms)
 
     batch_size = 4
     train_loader = DataLoader(
@@ -96,8 +96,8 @@ def get_train_test_loaders(train_tfms, test_tfms):
     if len(test_ids) == 0:
         raise RuntimeError("test_ids_subsample.txt is empty.")
 
-    train_ds = OverfitDataset(overfit_ids, tfms=train_tfms)
-    test_ds = OverfitDataset(test_ids, tfms=test_tfms)
+    train_ds = BuildingDataset(overfit_ids, tfms=train_tfms)
+    test_ds = BuildingDataset(test_ids, tfms=test_tfms)
 
     batch_size = 4
     train_loader = DataLoader(
@@ -129,8 +129,8 @@ def get_train_test_loaders_60(train_tfms, test_tfms):
     if len(test_ids) == 0:
         raise RuntimeError("test_ids_subsample.txt is empty.")
 
-    train_ds = OverfitDataset(overfit_ids, tfms=train_tfms)
-    test_ds = OverfitDataset(test_ids, tfms=test_tfms)
+    train_ds = BuildingDataset(overfit_ids, tfms=train_tfms)
+    test_ds = BuildingDataset(test_ids, tfms=test_tfms)
 
     batch_size = 4
     train_loader = DataLoader(
@@ -157,7 +157,7 @@ def get_test_loader_one_batch(test_tfms):
     if len(test_ids) == 0:
         raise RuntimeError("test_ids_subsample.txt is empty.")
 
-    test_ds = OverfitDataset(test_ids, tfms=test_tfms)
+    test_ds = BuildingDataset(test_ids, tfms=test_tfms)
 
     batch_size = 1
 

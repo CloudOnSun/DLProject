@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from segmentation_models_pytorch import Unet
 
-from overfit_method import (
+from method import (
     read_ids,
     tfms_val_normalized_encoder_vals,
     iou_score,

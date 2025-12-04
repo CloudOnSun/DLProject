@@ -6,13 +6,13 @@ import torch
 from segmentation_models_pytorch import Unet
 from tqdm import tqdm
 
-from overfit_method import (
+from method import (
     tfms_val_normalized_encoder_vals,
     combined_boundary_hnm_loss,
     tfms_building_focus_train,
     main
 )
-from overfit_trials import get_train_test_loaders
+from trials import get_train_test_loaders
 
 
 def run_phase2_hnm(

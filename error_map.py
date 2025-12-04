@@ -4,8 +4,8 @@ from segmentation_models_pytorch import Unet
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from overfit_method import (
-    OverfitDataset,
+from method import (
+    BuildingDataset,
     read_ids,
     tfms_val_normalized_encoder_vals,
 )
@@ -16,10 +16,10 @@ from stats import save_error_maps_per_image
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device:", device)
 
-model_path = "unet/unet_train_test_split_found_lr_0003.pt"
+model_path = "unet/unet_train_test_split_found_building_focus_p_09_lr_005.pt"
 test_ids_file = "ids/test_ids_subsample.txt"
 
-save_dir = "plots/error_maps_per_image"
+save_dir = "plots/error_maps_per_image_focus_building"
 os.makedirs(save_dir, exist_ok=True)
 
 
@@ -42,7 +42,7 @@ print("Loaded model from:", model_path)
 test_ids = read_ids(test_ids_file)
 print(f"Loaded {len(test_ids)} test samples")
 
-test_ds = OverfitDataset(test_ids, tfms=tfms_val_normalized_encoder_vals)
+test_ds = BuildingDataset(test_ids, tfms=tfms_val_normalized_encoder_vals)
 test_loader = DataLoader(test_ds, batch_size=1, shuffle=False)
 
 

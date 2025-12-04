@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 
-from overfit_method import read_ids, OverfitDataset, tfms_basic
+from method import read_ids, BuildingDataset, tfms_basic
 
 
 def compute_mean_std(dataset):
@@ -30,7 +30,7 @@ print("Loaded", len(train_ids), "train samples")
 if len(train_ids) == 0:
     raise RuntimeError("train_ids_subsample.txt is empty. Check how you generated it.")
 
-train_ds = OverfitDataset(train_ids, tfms=tfms_basic)
+train_ds = BuildingDataset(train_ids, tfms=tfms_basic)
 mean, std = compute_mean_std(train_ds)
 print("Mean:", mean)
 print("Std:", std)

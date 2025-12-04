@@ -397,7 +397,7 @@ def gradcam_decoder_for_loader(
 
 
 
-class OverfitDataset(Dataset):
+class BuildingDataset(Dataset):
     def __init__(self, ids, tfms):
         self.ids = ids
         self.tfms = tfms
